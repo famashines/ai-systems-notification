@@ -17,7 +17,7 @@ import {
   type Started,
 } from "@famashines/ai-systems-kit/testing";
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from "jose";
-import { mongoSent } from "../../src/adapters/mongo.ts";
+import { claimedAtMigration, indexMigration, mongoSent } from "../../src/adapters/mongo.ts";
 import { texts } from "../../src/domain/push.ts";
 import { envSchema, start } from "../../src/main.ts";
 import { rows, sentinel } from "../events.ts";
@@ -298,6 +298,19 @@ test("sent has a 30-day TTL on claimedAt, and each push has a sent mark", async 
   assert.ok(!indexes.some((index) => index.key.sentAt === 1));
   assert.ok((await sent.countDocuments()) > 0);
   assert.equal(await sent.countDocuments({ sentAt: { $exists: false } }), 0);
+});
+
+test("migration 002 gives an old sent row a claimedAt and drops the sentAt index", async () => {
+  const db = mongo.db.client.db("notification_migration");
+  const sent = db.collection<{ _id: string; sentAt: Date; claimedAt?: Date }>("sent");
+  await indexMigration.up(db);
+  const sentAt = new Date("2026-11-01T10:00:00.000Z");
+  await sent.insertOne({ _id: "old-row", sentAt });
+  await claimedAtMigration.up(db);
+  assert.deepEqual((await sent.findOne({ _id: "old-row" }))?.claimedAt, sentAt);
+  assert.ok(!(await sent.indexes()).some((index) => index.key.sentAt === 1));
+  await claimedAtMigration.up(db);
+  await db.dropDatabase();
 });
 
 test("the claim states of the sent log", async () => {

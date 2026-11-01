@@ -7,7 +7,8 @@
   seconds old or more, so a crash between the claim and the send, or a
   failed release of the claim, does not lose the push. A younger claim
   with no `sentAt` makes the handler throw, so the message comes again.
-- Migration `002-notification-sent-claimed-at`: the 30-day TTL moves from
+- Migration `002-notification-sent-claimed-at`: old rows get `claimedAt`
+  from `sentAt`, and the 30-day TTL moves from
   `sentAt` to `claimedAt`.
 - FCM `SENDER_ID_MISMATCH` removes the device, the same as `UNREGISTERED`.
 

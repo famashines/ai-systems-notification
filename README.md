@@ -105,7 +105,8 @@ claim (insert, claimedAt) --> send --> mark (sentAt)
   claim stays, and a try after 60 seconds takes it over.
 - If the mark fails after a send, the push can come a second time after 60
   seconds. The tag of the task collapses it on the phone.
-- After 5 tries the message goes to the `DLQ`. A DLQ replay sends it.
+- After 5 tries the message goes to the `DLQ`. A DLQ replay sends it
+  only within 24 hours of the event (the max age below).
 - An event older than 24 hours gives no push. A new durable consumer
   starts at the first message of its stream (30 days), so this stops a
   flood of old pushes when a consumer is made again.

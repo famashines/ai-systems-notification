@@ -16,6 +16,7 @@ export const claimedAtMigration: Migration = {
   up: async (db) => {
     const sent = db.collection("sent");
     await sent.createIndex({ claimedAt: 1 }, { expireAfterSeconds: 30 * 86400 }, undefined);
+    await sent.updateMany({ claimedAt: { $exists: false } }, [{ $set: { claimedAt: "$sentAt" } }]);
     await sent.dropIndex("sentAt_1").catch((error: unknown) => {
       if (!(error instanceof MongoServerError && error.code === 27)) throw error;
     });
