@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+- Claim, send, then mark: `sent` has `claimedAt` and `sentAt`. A
+  redelivery sends again to a device whose claim has no `sentAt` and is 60
+  seconds old or more, so a crash between the claim and the send, or a
+  failed release of the claim, does not lose the push. A younger claim
+  with no `sentAt` makes the handler throw, so the message comes again.
+- Migration `002-notification-sent-claimed-at`: the 30-day TTL moves from
+  `sentAt` to `claimedAt`.
+- FCM `SENDER_ID_MISMATCH` removes the device, the same as `UNREGISTERED`.
+
 ## 0.1.0
 
 - `POST /internal/commands/register-device` and

@@ -11,9 +11,9 @@ owner --api-gateway--POST /internal/commands/register-device-----> devices (Mong
 owner --api-gateway--POST /internal/commands/unregister-device---> devices
 
 ORCHESTRATION --one durable for each push event--+
-BUDGET --durable notification (ThresholdCrossed)-+--> push table --> sent (claim)
+BUDGET --durable notification (ThresholdCrossed)-+--> push table --> sent (claim, mark)
                                                                    --> PushSender --> FCM HTTP v1
-                                                                         | UNREGISTERED
+                                                                         | UNREGISTERED, SENDER_ID_MISMATCH
                                                                          v
                                                                device removed
 ```
@@ -79,15 +79,33 @@ its next release.
 
 ## Once only
 
+The service claims, then sends, then marks. A crash does not lose a push. A
+second copy can come after a crash, and the Android tag of the task
+replaces the first copy on the phone.
+
+```
+claim (insert, claimedAt) --> send --> mark (sentAt)
+   | exists, sentAt                    sent: skip
+   | exists, no sentAt, under 60 s     busy: throw, the message comes again
+   | exists, no sentAt, 60 s or more   take over the claim and send
+```
+
 - `sent` has one document for each source event and device
-  (`_id` `<eventId>:<deviceId>`, 30 days TTL). The service writes it
-  before it sends. A redelivery finds it and sends nothing.
-- If FCM fails for a device, the service removes the document of that
-  device, tries the other devices, and then throws. The consumer gets the
-  message again with the backoff of the kit, and only the failed devices
-  get the push. After 5 tries the message goes to the `DLQ`.
-- A crash between the write and the send loses that push. It never sends
-  it two times.
+  (`_id` `<eventId>:<deviceId>`, `claimedAt`, `sentAt`, 30 days TTL on
+  `claimedAt`).
+- A redelivery sends nothing to a device whose document has `sentAt`.
+- A claim with no `sentAt` is from a try that runs now, or from a crash
+  between the claim and the send. If it is under 60 seconds old, the
+  handler throws and the consumer gets the message again with the kit
+  backoff (1, 5, 30, 120 seconds). A claim of 60 seconds or more is taken
+  over and sent.
+- If FCM fails for a device, the service removes the claim of that device,
+  tries the other devices, and then throws. Only the failed devices get the
+  push on the next try. If the removal fails too (MongoDB is down), the
+  claim stays, and a try after 60 seconds takes it over.
+- If the mark fails after a send, the push can come a second time after 60
+  seconds. The tag of the task collapses it on the phone.
+- After 5 tries the message goes to the `DLQ`. A DLQ replay sends it.
 - An event older than 24 hours gives no push. A new durable consumer
   starts at the first message of its stream (30 days), so this stops a
   flood of old pushes when a consumer is made again.
@@ -119,7 +137,8 @@ table. The integration test has the grants.
 - `GOOGLE_APPLICATION_CREDENTIALS` is the path of the service account
   JSON file (a mounted secret). The service reads it at start and stops
   if it is not a service account key. The error never shows the key.
-- A 404 with the error code `UNREGISTERED` removes the device. A 401
+- The error code `UNREGISTERED` (404) or `SENDER_ID_MISMATCH` (403)
+  removes the device: the token is not valid for this Firebase project. A 401
   drops the cached access token. Every other error throws, so the push
   comes again.
 - Tests and CI use only the fake sender (`test/fake-sender.ts`) and a fake

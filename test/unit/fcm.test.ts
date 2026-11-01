@@ -113,25 +113,27 @@ test("the sender signs a token request, then sends the FCM v1 message", async ()
   );
 });
 
-test("UNREGISTERED gives unregistered", async () => {
-  const { fetch } = fakeFetch(
-    google(() =>
-      json(404, {
-        error: {
-          code: 404,
-          status: "NOT_FOUND",
-          details: [
-            {
-              "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError",
-              errorCode: "UNREGISTERED",
-            },
-          ],
-        },
-      }),
-    ),
-  );
-  assert.equal(await fcmSender({ account, fetch }).send("old-token", push), "unregistered");
-});
+for (const [status, errorCode] of [
+  [404, "UNREGISTERED"],
+  [403, "SENDER_ID_MISMATCH"],
+] as const) {
+  test(`${errorCode} gives unregistered`, async () => {
+    const { fetch } = fakeFetch(
+      google(() =>
+        json(status, {
+          error: {
+            code: status,
+            status: status === 404 ? "NOT_FOUND" : "PERMISSION_DENIED",
+            details: [
+              { "@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError", errorCode },
+            ],
+          },
+        }),
+      ),
+    );
+    assert.equal(await fcmSender({ account, fetch }).send("old-token", push), "unregistered");
+  });
+}
 
 test("other FCM errors throw; a 401 gets a new access token next time", async () => {
   let status = 503;

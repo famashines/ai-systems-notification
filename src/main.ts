@@ -7,7 +7,7 @@ import { createLogger, startTelemetry } from "@famashines/ai-systems-kit/observa
 import { z } from "zod";
 import { fcmSender, readServiceAccount } from "./adapters/fcm.ts";
 import { routes } from "./adapters/http.ts";
-import { indexMigration, mongoDevices, mongoSent } from "./adapters/mongo.ts";
+import { claimedAtMigration, indexMigration, mongoDevices, mongoSent } from "./adapters/mongo.ts";
 import { notify, type PushSender } from "./application/notify.ts";
 
 export const service = "notification";
@@ -86,7 +86,7 @@ export async function start(config: Readonly<Config>, { sender, ...options }: St
     database: config.MONGODB_DATABASE,
     clientOptions: { serverSelectionTimeoutMS: 5000 },
   });
-  const migrations = [indexMigration];
+  const migrations = [indexMigration, claimedAtMigration];
   await runMigrations(mongo.db, migrations);
   const now = () => new Date();
   const devices = mongoDevices(mongo.db);

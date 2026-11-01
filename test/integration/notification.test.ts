@@ -17,6 +17,7 @@ import {
   type Started,
 } from "@famashines/ai-systems-kit/testing";
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from "jose";
+import { mongoSent } from "../../src/adapters/mongo.ts";
 import { texts } from "../../src/domain/push.ts";
 import { envSchema, start } from "../../src/main.ts";
 import { rows, sentinel } from "../events.ts";
@@ -288,9 +289,46 @@ test("the grants let the service read only its fixed subjects", async () => {
   assert.ok(reply.json<{ error?: unknown }>().error);
 });
 
-test("sent has a 30-day TTL", async () => {
-  const indexes = await mongo.db.collection("sent").indexes();
+test("sent has a 30-day TTL on claimedAt, and each push has a sent mark", async () => {
+  const sent = mongo.db.collection<{ claimedAt: Date; sentAt?: Date }>("sent");
+  const indexes = await sent.indexes();
   assert.ok(
-    indexes.some((index) => index.key.sentAt === 1 && index.expireAfterSeconds === 30 * 86400),
+    indexes.some((index) => index.key.claimedAt === 1 && index.expireAfterSeconds === 30 * 86400),
   );
+  assert.ok(!indexes.some((index) => index.key.sentAt === 1));
+  assert.ok((await sent.countDocuments()) > 0);
+  assert.equal(await sent.countDocuments({ sentAt: { $exists: false } }), 0);
+});
+
+test("the claim states of the sent log", async () => {
+  const log = mongoSent(mongo.db);
+  const entry = { eventId: randomUUID(), deviceId: randomUUID(), kind: "approval_needed" as const };
+  const t0 = new Date();
+  const later = (ms: number) => new Date(t0.getTime() + ms);
+  assert.equal(await log.claim(entry, t0, later(-60_000)), "claimed");
+  assert.equal(await log.claim(entry, later(30_000), later(-30_000)), "busy");
+  assert.equal(await log.claim(entry, later(61_000), later(1_000)), "claimed");
+  assert.equal(await log.claim(entry, later(62_000), later(1_000)), "busy");
+  await log.markSent(entry, later(63_000));
+  assert.equal(await log.claim(entry, later(999_000), later(900_000)), "sent");
+  await log.release({ ...entry, eventId: randomUUID() });
+  assert.equal(await log.claim(entry, later(999_000), later(900_000)), "sent");
+});
+
+test("a claim with no sent mark from a crash is sent again on the redelivery", async () => {
+  const deviceId = randomUUID();
+  assert.equal((await register(deviceId, "token-crash", "de")).status, 201);
+  const taskId = randomUUID();
+  const event = rows[0]?.event(taskId) ?? assert.fail();
+  await mongo.db.collection<{ _id: string; claimedAt: Date }>("sent").insertOne({
+    _id: `${event.eventId}:${deviceId}`,
+    claimedAt: new Date(Date.now() - 61_000),
+  });
+  await publish(event);
+  await waitFor(() => pushed({ kind: "completed", taskId }).length === 1);
+  assert.equal(pushed({ kind: "completed", taskId })[0]?.token, "token-crash");
+  const claim = await mongo.db
+    .collection<{ _id: string; sentAt?: Date }>("sent")
+    .findOne({ _id: `${event.eventId}:${deviceId}` });
+  assert.ok(claim?.sentAt);
 });

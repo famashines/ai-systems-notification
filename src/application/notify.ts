@@ -29,9 +29,18 @@ export interface SentEntry {
   kind: PushKind;
 }
 
+export type ClaimState = "claimed" | "sent" | "busy";
+
 export interface SentLog {
-  claim(entry: SentEntry, now: Date): Promise<boolean>;
+  claim(entry: SentEntry, now: Date, staleBefore: Date): Promise<ClaimState>;
+  markSent(entry: SentEntry, now: Date): Promise<void>;
   release(entry: SentEntry): Promise<void>;
+}
+
+export const claimTimeoutMs = 60_000;
+
+export class ClaimBusyError extends Error {
+  override readonly name = "ClaimBusyError";
 }
 
 export type SendResult = "sent" | "unregistered";
@@ -60,19 +69,31 @@ export async function notify(deps: NotifyDeps, event: RegisteredEvent): Promise<
   const failures: unknown[] = [];
   for (const device of await deps.devices.all()) {
     const entry = { eventId: event.eventId, deviceId: device.deviceId, kind: data.kind };
-    if (!(await deps.sent.claim(entry, deps.now()))) continue;
+    const log = { eventId: event.eventId, deviceId: device.deviceId };
     try {
-      const result = await deps.sender.send(device.token, pushFor(data, device.locale));
+      const now = deps.now();
+      const state = await deps.sent.claim(entry, now, new Date(now.getTime() - claimTimeoutMs));
+      if (state === "sent") continue;
+      if (state === "busy") throw new ClaimBusyError("Another try of this push is in progress");
+      let result: SendResult;
+      try {
+        result = await deps.sender.send(device.token, pushFor(data, device.locale));
+      } catch (error) {
+        await deps.sent.release(entry).catch((releaseError: unknown) => {
+          deps.logger.warn(
+            { error: describeError(releaseError), ...log },
+            "the claim was not released; a later try takes it over",
+          );
+        });
+        throw error;
+      }
       if (result === "unregistered") {
         await deps.devices.remove(device.deviceId, device.token);
         deps.logger.info({ deviceId: device.deviceId }, "FCM does not know the token; removed");
       }
+      await deps.sent.markSent(entry, deps.now());
     } catch (error) {
-      await deps.sent.release(entry);
-      deps.logger.warn(
-        { error: describeError(error), eventId: event.eventId, deviceId: device.deviceId },
-        "the push failed; it comes again",
-      );
+      deps.logger.warn({ error: describeError(error), ...log }, "the push failed; it comes again");
       failures.push(error);
     }
   }
