@@ -11,6 +11,18 @@ export const indexMigration: Migration = {
   },
 };
 
+export const claimedAtMigration: Migration = {
+  name: "002-notification-sent-claimed-at",
+  up: async (db) => {
+    const sent = db.collection("sent");
+    await sent.createIndex({ claimedAt: 1 }, { expireAfterSeconds: 30 * 86400 }, undefined);
+    await sent.updateMany({ claimedAt: { $exists: false } }, [{ $set: { claimedAt: "$sentAt" } }]);
+    await sent.dropIndex("sentAt_1").catch((error: unknown) => {
+      if (!(error instanceof MongoServerError && error.code === 27)) throw error;
+    });
+  },
+};
+
 interface DeviceDocument extends Omit<Device, "deviceId"> {
   _id: string;
   registeredAt: Date;
@@ -19,7 +31,8 @@ interface DeviceDocument extends Omit<Device, "deviceId"> {
 
 interface SentDocument extends SentEntry {
   _id: string;
-  sentAt: Date;
+  claimedAt: Date;
+  sentAt?: Date;
 }
 
 export function mongoDevices(db: Db): Devices {
@@ -56,14 +69,23 @@ const sentId = ({ eventId, deviceId }: SentEntry): string => `${eventId}:${devic
 export function mongoSent(db: Db): SentLog {
   const sent = db.collection<SentDocument>("sent");
   return {
-    claim: async (entry, now) => {
+    claim: async (entry, now, staleBefore) => {
+      const _id = sentId(entry);
       try {
-        await sent.insertOne({ _id: sentId(entry), ...entry, sentAt: now });
-        return true;
+        await sent.insertOne({ _id, ...entry, claimedAt: now });
+        return "claimed";
       } catch (error) {
-        if (error instanceof MongoServerError && error.code === 11000) return false;
-        throw error;
+        if (!(error instanceof MongoServerError && error.code === 11000)) throw error;
       }
+      const taken = await sent.findOneAndUpdate(
+        { _id, sentAt: { $exists: false }, claimedAt: { $lte: staleBefore } },
+        { $set: { claimedAt: now } },
+      );
+      if (taken !== null) return "claimed";
+      return (await sent.findOne({ _id }))?.sentAt === undefined ? "busy" : "sent";
+    },
+    markSent: async (entry, now) => {
+      await sent.updateOne({ _id: sentId(entry) }, { $set: { sentAt: now } });
     },
     release: async (entry) => {
       await sent.deleteOne({ _id: sentId(entry) });

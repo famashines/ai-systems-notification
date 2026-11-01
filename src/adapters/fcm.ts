@@ -125,7 +125,7 @@ export function fcmSender({
         ? (reply.data.error.details?.find((detail) => detail.errorCode)?.errorCode ??
           reply.data.error.status)
         : undefined;
-      if (code === "UNREGISTERED") return "unregistered";
+      if (code === "UNREGISTERED" || code === "SENDER_ID_MISMATCH") return "unregistered";
       if (response.status === 401) cached = undefined;
       throw new FcmError(`FCM answered ${String(response.status)} ${code ?? "with no code"}`);
     },
